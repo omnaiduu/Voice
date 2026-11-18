@@ -86,10 +86,14 @@ OMNI_PORT = 8091
 # Expressive TTS served the fast way: vLLM-Omni (talker -> code2wav, async chunk streaming),
 # on its own small GPU so it never competes with the Gemma talkers for memory.
 omni_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("ffmpeg", "sox", "libsox-fmt-all", "git")
+    # CUDA *devel* base: vLLM-Omni's sampler JIT-compiles a kernel at startup and needs nvcc
+    # (on debian_slim it crashed with "Could not find nvcc and default cuda_home='/usr/local/cuda'").
+    modal.Image.from_registry("nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04", add_python="3.12")
+    .entrypoint([])
+    .apt_install("ffmpeg", "sox", "libsox-fmt-all", "git", "build-essential")
     .uv_pip_install("vllm==0.32.0", "vllm-omni==0.32.0", "hf_transfer")
-    .env({"HF_HOME": "/cache/hf", "HF_HUB_ENABLE_HF_TRANSFER": "1", "VLLM_CACHE_ROOT": "/cache/vllm"})
+    .env({"HF_HOME": "/cache/hf", "HF_HUB_ENABLE_HF_TRANSFER": "1", "VLLM_CACHE_ROOT": "/cache/vllm",
+          "CUDA_HOME": "/usr/local/cuda"})
 )
 
 
