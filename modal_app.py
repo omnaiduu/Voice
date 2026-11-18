@@ -41,7 +41,7 @@ image = (
     )
     .run_commands(
         f"uv venv /opt/asr --python {PY}",
-        "uv pip install --python /opt/asr/bin/python 'nemo_toolkit[asr]==2.7.3' 'numpy<2' "
+        "uv pip install --python /opt/asr/bin/python 'nemo_toolkit[asr]==2.7.3' "
         "'fastapi==0.115.12' 'uvicorn[standard]' hf_transfer soundfile",
     )
     .run_commands(
@@ -95,3 +95,28 @@ def web():
     from talker_voice.server import app as fastapi_app
 
     return fastapi_app
+
+
+@app.function(image=image, cpu=2, memory=8 * 1024, timeout=20 * 60)
+def smoke():
+    """Cheap CPU-only check that every venv imports cleanly (run before spending GPU time):
+
+    modal run modal_app.py::smoke
+    """
+    import subprocess
+
+    checks = {
+        "asr (NeMo)": ["/opt/asr/bin/python", "-c", "import nemo.collections.asr, numpy; print('nemo ok, numpy', numpy.__version__)"],
+        "tts (Kokoro)": ["/opt/tts/bin/python", "-c", "from kokoro import KModel, KPipeline; import spacy; spacy.load('en_core_web_sm'); print('kokoro ok')"],
+        "vllm": ["/opt/vllm/bin/python", "-c", "import vllm; print('vllm', vllm.__version__)"],
+        "bot (Pipecat)": ["python", "-c", "import talker_voice.bot, talker_voice.server; print('bot ok')"],
+    }
+    failed = []
+    for name, cmd in checks.items():
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd="/root")
+        tail = (r.stdout + r.stderr).strip().splitlines()[-3:]
+        print(f"[{'OK' if r.returncode == 0 else 'FAIL'}] {name}: {' | '.join(tail)}")
+        if r.returncode:
+            failed.append(name)
+    if failed:
+        raise SystemExit(f"FAILED: {failed}")
