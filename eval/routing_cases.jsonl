@@ -1,0 +1,60 @@
+{"text": "Hi, how are you?", "route": "INSTANT"}
+{"text": "Good morning!", "route": "INSTANT"}
+{"text": "Thanks, that's all for now.", "route": "INSTANT"}
+{"text": "Can you repeat that?", "route": "INSTANT"}
+{"text": "What's two plus two?", "route": "INSTANT"}
+{"text": "Tell me a fun fact about cats.", "route": "INSTANT"}
+{"text": "What is the capital of France?", "route": "INSTANT"}
+{"text": "How do you say thank you in Hindi?", "route": "INSTANT"}
+{"text": "Okay, sounds good.", "route": "INSTANT"}
+{"text": "What does a talker model do in a voice bot?", "route": "INSTANT"}
+{"text": "Give me a one line motivational quote.", "route": "INSTANT"}
+{"text": "Who wrote Romeo and Juliet?", "route": "INSTANT"}
+{"text": "Is a tomato a fruit or a vegetable?", "route": "INSTANT"}
+{"text": "How many days are in a leap year?", "route": "INSTANT"}
+{"text": "Yeah, go on.", "route": "INSTANT"}
+{"text": "What's your name?", "route": "INSTANT"}
+{"text": "Can you speak a little slower?", "route": "INSTANT"}
+{"text": "Spell the word necessary.", "route": "INSTANT"}
+{"text": "What colour do you get mixing blue and yellow?", "route": "INSTANT"}
+{"text": "Say something nice to me.", "route": "INSTANT"}
+{"text": "What's the weather in Mumbai right now?", "route": "DELEGATE"}
+{"text": "What's the latest news about the stock market today?", "route": "DELEGATE"}
+{"text": "Check the status of my order number 4 4 1 2.", "route": "DELEGATE"}
+{"text": "Plan a five day trip to Kerala with a budget of fifty thousand rupees.", "route": "DELEGATE"}
+{"text": "Compare the total cost of owning an electric car versus a petrol car over seven years.", "route": "DELEGATE"}
+{"text": "What's my current account balance?", "route": "DELEGATE"}
+{"text": "Book me a table for four at an Italian place tomorrow at eight.", "route": "DELEGATE"}
+{"text": "Who won yesterday's cricket match?", "route": "DELEGATE"}
+{"text": "Write a Python function that merges two sorted linked lists and explain the complexity.", "route": "DELEGATE"}
+{"text": "Calculate the EMI on a twenty lakh loan at eight point five percent for fifteen years.", "route": "DELEGATE"}
+{"text": "Help me debug why my Kubernetes pod keeps crash looping.", "route": "DELEGATE"}
+{"text": "What's the current price of Bitcoin?", "route": "DELEGATE"}
+{"text": "Reschedule my dentist appointment to sometime next week that doesn't clash with my meetings.", "route": "DELEGATE"}
+{"text": "Summarize the key differences between the last three iPhone models.", "route": "DELEGATE"}
+{"text": "Is there a flight from Delhi to Bangalore tonight under five thousand rupees?", "route": "DELEGATE"}
+{"text": "Analyze whether I should refinance my home loan given current interest rates.", "route": "DELEGATE"}
+{"text": "What time does the nearest pharmacy close today?", "route": "DELEGATE"}
+{"text": "Draft a detailed project plan for migrating our database to Postgres.", "route": "DELEGATE"}
+{"text": "How much did I spend on food last month?", "route": "DELEGATE"}
+{"text": "Prove that the square root of two is irrational, step by step.", "route": "DELEGATE"}
+{"text": "Book it.", "route": "CLARIFY"}
+{"text": "Can you send that to him?", "route": "CLARIFY"}
+{"text": "I want to change it.", "route": "CLARIFY"}
+{"text": "What about the other one?", "route": "CLARIFY"}
+{"text": "Set an alarm.", "route": "CLARIFY"}
+{"text": "Order the usual.", "route": "CLARIFY"}
+{"text": "Call her back.", "route": "CLARIFY"}
+{"text": "Move it to later.", "route": "CLARIFY"}
+{"text": "Cancel.", "route": "CLARIFY"}
+{"text": "Is it open?", "route": "CLARIFY"}
+{"text": "How much is it?", "route": "CLARIFY"}
+{"text": "Play that song.", "route": "CLARIFY"}
+{"text": "Remind me about the thing.", "route": "CLARIFY"}
+{"text": "Transfer the money.", "route": "CLARIFY"}
+{"text": "Uh, the blue... no wait.", "route": "CLARIFY"}
+{"text": "Send a message.", "route": "CLARIFY"}
+{"text": "Make it bigger.", "route": "CLARIFY"}
+{"text": "Which one is better?", "route": "CLARIFY"}
+{"text": "Get me a cab.", "route": "CLARIFY"}
+{"text": "Turn it off.", "route": "CLARIFY"}

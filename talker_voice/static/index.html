@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Talker Voice Lab</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #16181d; --muted: #667085; --line: #e4e7ec;
+    --accent: #3b5bdb; --accent-soft: #e8edff; --ok: #12805c; --warn: #b54708; --bad: #c01048;
+    --user: #eef2f6; --bot: #e8edff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --panel: #171a21; --text: #e7e9ee; --muted: #98a2b3; --line: #2a2f3a;
+      --accent: #7c95ff; --accent-soft: #232a45; --ok: #3ccb8f; --warn: #f5a524; --bad: #ff5c8a;
+      --user: #1f232c; --bot: #232a45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  select, input[type=range] { width: 100%; }
+  select { padding: 7px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  button { width: 100%; margin-top: 14px; padding: 12px; border: 0; border-radius: 10px; font-weight: 600;
+    background: var(--accent); color: #fff; font-size: 15px; cursor: pointer; }
+  button.stop { background: var(--bad); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .status-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.ready { background: var(--ok); } .dot.loading, .dot.starting, .dot.waiting { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .state { display: flex; align-items: center; gap: 10px; font-weight: 600; margin-bottom: 10px; }
+  .orb { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: background .2s; }
+  .orb.listening { background: var(--ok); box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 25%, transparent); }
+  .orb.thinking { background: var(--warn); }
+  .orb.speaking { background: var(--accent); box-shadow: 0 0 0 6px var(--accent-soft); }
+  #log { display: flex; flex-direction: column; gap: 8px; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
+  .msg { padding: 8px 10px; border-radius: 10px; max-width: 92%; word-wrap: break-word; }
+  .msg.user { background: var(--user); align-self: flex-end; }
+  .msg.bot { background: var(--bot); align-self: flex-start; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
+  .chip.route { border-color: var(--accent); color: var(--accent); }
+  .chip.big { font-weight: 700; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  pre { white-space: pre-wrap; font-size: 12px; margin: 4px 0 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Talker Voice Lab</h1>
+  <p class="sub">Parakeet STT → Gemma 4 talker (JSON: route + say) → sentence chunking → Kokoro TTS. Peer-to-peer WebRTC, one GPU.</p>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Call</h2>
+        <label for="talker">Talker model</label>
+        <select id="talker"></select>
+        <label for="voice">Voice</label>
+        <select id="voice"></select>
+        <label for="speed">Speed <span id="speedv">1.00×</span></label>
+        <input id="speed" type="range" min="0.8" max="1.3" step="0.05" value="1.0" />
+        <button id="call" disabled>Waiting for models…</button>
+        <p class="hint">Use headphones for the best barge-in. Switching the model reconnects the call.</p>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Server</h2>
+        <div id="status"></div>
+        <p class="hint" id="region"></p>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Averages (this tab)</h2>
+        <table id="avg"><thead><tr><th>Talker</th><th>turns</th><th>first word</th><th>LLM 1st tok</th><th>STT</th></tr></thead><tbody></tbody></table>
+        <p class="hint">"first word" = from the end of your speech to the bot's audio leaving the server. Add ~50–150 ms network and playback.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="state"><div class="orb" id="orb"></div><span id="stateText">Not connected</span></div>
+      <div id="log"></div>
+    </div>
+  </div>
+  <audio id="remote" autoplay playsinline></audio>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pc = null, dc = null, pingTimer = null, localStream = null, connected = false;
+let lastActivity = Date.now(), statusTimer = null;
+const stats = {}; // talker -> {n, v2v, ttft, stt}
+let pendingBot = null;
+
+// ---------- status polling (also keeps the Modal container warm while you use it)
+async function pollStatus() {
+  try {
+    const r = await fetch("/api/status");
+    const s = await r.json();
+    renderStatus(s);
+  } catch (e) { $("status").textContent = "server unreachable…"; }
+  const idleMin = (Date.now() - lastActivity) / 60000;
+  if (!connected && idleMin > 15) {   // stop pinging so the GPU can shut down
+    $("status").innerHTML += '<p class="hint">Idle: stopped polling so the GPU can scale to zero. Reload to wake it.</p>';
+    clearInterval(statusTimer); return;
+  }
+}
+let populated = false;
+function renderStatus(s) {
+  const rows = Object.entries(s.status).map(([k, v]) => {
+    const cls = v === "ready" ? "ready" : (v.startsWith("crash") || v === "timeout") ? "bad" : v;
+    const name = s.talkers[k] || k.toUpperCase();
+    return `<div class="status-row"><span><span class="dot ${cls}"></span>${name}</span><span>${v}</span></div>`;
+  });
+  $("status").innerHTML = rows.join("");
+  $("region").textContent = `Region: ${s.region}`;
+  if (!populated) {
+    populated = true;
+    $("talker").innerHTML = Object.entries(s.talkers).map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+    $("voice").innerHTML = Object.entries(s.voices).map(([k, l]) => `<option value="${k}" ${k===s.default_voice?"selected":""}>${l}</option>`).join("");
+  }
+  const t = $("talker").value;
+  const ready = s.status.asr === "ready" && s.status.tts === "ready" && s.status[t] === "ready";
+  if (!connected) {
+    $("call").disabled = !ready;
+    $("call").textContent = ready ? "Start talking" : "Waiting for models… (cold start takes a few minutes)";
+  }
+}
+statusTimer = setInterval(pollStatus, 4000); pollStatus();
+
+// ---------- UI helpers
+function setState(st) {
+  $("orb").className = "orb " + st;
+  $("stateText").textContent = { listening: "Listening…", thinking: "Thinking…", speaking: "Speaking", idle: "Your turn", connecting: "Connecting…" }[st] || st;
+}
+function addMsg(cls, text) {
+  const d = document.createElement("div"); d.className = "msg " + cls;
+  d.innerHTML = `<div class="t"></div><div class="meta"></div>`;
+  d.querySelector(".t").textContent = text;
+  $("log").appendChild(d); $("log").scrollTop = 1e9; return d;
+}
+function chip(el, text, cls="") { const c = document.createElement("span"); c.className = "chip " + cls; c.textContent = text; el.querySelector(".meta").appendChild(c); }
+function renderAvg() {
+  $("avg").querySelector("tbody").innerHTML = Object.entries(stats).map(([k, s]) => {
+    const f = (x) => s.n ? Math.round(x / s.n) + " ms" : "–";
+    return `<tr><td>${k}</td><td>${s.n}</td><td>${f(s.v2v)}</td><td>${f(s.ttft)}</td><td>${f(s.stt)}</td></tr>`;
+  }).join("");
+}
+
+// ---------- messages from the bot (WebRTC data channel)
+function onBotMessage(m) {
+  lastActivity = Date.now();
+  if (m.type === "state") setState(m.state);
+  else if (m.type === "ready") { setState("idle"); addMsg("bot", `Connected to ${m.talker}. Say hello!`); }
+  else if (m.type === "user") { const d = addMsg("user", m.text || "(nothing heard)"); chip(d, `STT ${m.asr_ms} ms`); }
+  else if (m.type === "route") { /* shown with the bot message */ }
+  else if (m.type === "bot") {
+    pendingBot = addMsg("bot", m.text || "");
+    if (m.route) chip(pendingBot, m.route, "route");
+    const det = document.createElement("details"); det.innerHTML = "<summary>raw JSON</summary><pre></pre>";
+    det.querySelector("pre").textContent = m.raw; pendingBot.appendChild(det);
+  }
+  else if (m.type === "metrics") {
+    const ms = m.ms, t = $("talker").value;
+    const target = pendingBot || $("log").lastElementChild;
+    if (ms.bot_started != null && target) {
+      chip(target, `first word ${ms.bot_started} ms`, "big");
+      if (ms.turn_end_decided != null) chip(target, `turn end +${ms.turn_end_decided}`);
+      if (ms.llm_first_token != null && ms.llm_request != null) chip(target, `LLM 1st tok ${ms.llm_first_token - ms.llm_request} ms`);
+      if (ms.first_say_text != null) chip(target, `say starts +${ms.first_say_text}`);
+      if (ms.tts_first_audio != null) chip(target, `TTS audio +${ms.tts_first_audio}`);
+      const s = stats[t] ||= { n: 0, v2v: 0, ttft: 0, stt: 0 };
+      s.n++; s.v2v += ms.bot_started; s.ttft += (ms.llm_first_token ?? 0) - (ms.llm_request ?? 0); s.stt += m.asr_ms ?? 0;
+      renderAvg();
+    }
+    pendingBot = null;
+  }
+  else if (m.type === "interrupted") { const last = $("log").lastElementChild; if (last) chip(last, "interrupted"); }
+}
+
+// ---------- WebRTC
+async function connect() {
+  lastActivity = Date.now();
+  $("call").disabled = true; setState("connecting");
+  localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  // Transceiver order matters to Pipecat's SmallWebRTC: 0 = audio, 1 = video
+  pc.addTransceiver(localStream.getAudioTracks()[0], { direction: "sendrecv" });
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.ontrack = (e) => { if (e.track.kind === "audio") $("remote").srcObject = e.streams[0] || new MediaStream([e.track]); };
+  dc = pc.createDataChannel("app", { ordered: true });
+  dc.onmessage = (e) => { try { onBotMessage(JSON.parse(e.data)); } catch (_) {} };
+  dc.onopen = () => { pingTimer = setInterval(() => { if (dc.readyState === "open") dc.send("ping"); }, 1000); };
+  pc.onconnectionstatechange = () => {
+    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      if (pc.connectionState === "failed") addMsg("bot", "WebRTC connection failed (network/firewall?). See README: TURN.");
+      disconnect();
+    }
+  };
+
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((res) => {  // non-trickle: wait for ICE candidates (max 2 s)
+    if (pc.iceGatheringState === "complete") return res();
+    const t = setTimeout(res, 2000);
+    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") { clearTimeout(t); res(); } });
+  });
+  const r = await fetch("/api/offer", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type,
+      talker: $("talker").value, voice: $("voice").value, speed: parseFloat($("speed").value) }),
+  });
+  if (!r.ok) { addMsg("bot", "Could not start: " + (await r.text())); disconnect(); return; }
+  const ans = await r.json();
+  await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type });
+  connected = true;
+  $("call").disabled = false; $("call").textContent = "Hang up"; $("call").classList.add("stop");
+}
+function disconnect() {
+  connected = false;
+  clearInterval(pingTimer);
+  try { dc && dc.close(); } catch (_) {}
+  try { pc && pc.close(); } catch (_) {}
+  localStream && localStream.getTracks().forEach((t) => t.stop());
+  pc = dc = localStream = null;
+  setState(""); $("stateText").textContent = "Not connected";
+  $("call").classList.remove("stop"); $("call").textContent = "Start talking"; $("call").disabled = false;
+}
+$("call").onclick = () => connected ? disconnect() : connect().catch((e) => { addMsg("bot", "Error: " + e.message); disconnect(); });
+$("talker").onchange = async () => { if (connected) { disconnect(); await connect(); } };
+$("voice").onchange = async () => { if (connected) { disconnect(); await connect(); } };
+$("speed").oninput = () => { $("speedv").textContent = parseFloat($("speed").value).toFixed(2) + "×"; };
+</script>
+</body>
+</html>
