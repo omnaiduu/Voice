@@ -55,7 +55,7 @@ image = (
     )
     # The bot itself (Pipecat) lives in the main Python.
     .uv_pip_install(
-        "pipecat-ai[webrtc,silero,local-smart-turn,openai]==1.16.0",
+        "pipecat-ai[webrtc,silero,local-smart-turn,openai,livekit]==1.16.0",
         "aiohttp",
         "fastapi[standard]",
     )
@@ -73,6 +73,11 @@ image = (
 app = modal.App(APP_NAME)
 cache = modal.Volume.from_name(f"{APP_NAME}-cache", create_if_missing=True)
 secrets = [modal.Secret.from_dict({"HF_TOKEN": os.environ["HF_TOKEN"]})] if os.environ.get("HF_TOKEN") else []
+# LiveKit Cloud credentials (Modal dashboard -> Secrets -> name "livekit"):
+#   LIVEKIT_URL=wss://<project>.livekit.cloud  LIVEKIT_API_KEY=...  LIVEKIT_API_SECRET=...
+secrets.append(
+    modal.Secret.from_name("livekit", required_keys=["LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"])
+)
 
 
 @app.function(

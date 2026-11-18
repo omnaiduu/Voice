@@ -40,6 +40,11 @@ from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
+try:  # optional: only needed for the LiveKit mode
+    from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
+except Exception:  # noqa: BLE001
+    LiveKitParams = LiveKitTransport = None
+
 from .config import ASR_PORT, DEFAULT_VOICE, TALKERS, TTS_PORT
 from .services import KokoroTTS, ParakeetSTT, SayExtractor
 from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
@@ -126,8 +131,10 @@ async def run_bot(
     *,
     webrtc_connection=None,
     websocket=None,
+    livekit: tuple[str, str, str] | None = None,
 ):
-    """Run one call. Pass exactly one of `webrtc_connection` (P2P) or `websocket`."""
+    """Run one call. Pass exactly one of `webrtc_connection` (P2P), `websocket`,
+    or `livekit=(url, bot_token, room_name)` (LiveKit Cloud SFU)."""
     talker = TALKERS[talker_key]
     holder: dict = {}
 
@@ -142,6 +149,20 @@ async def run_bot(
                 webrtc_connection.send_app_message(msg)
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"send_app_message failed: {e}")
+
+    elif livekit is not None:
+        lk_url, lk_token, lk_room = livekit
+        transport = LiveKitTransport(
+            url=lk_url,
+            token=lk_token,
+            room_name=lk_room,
+            params=LiveKitParams(audio_in_enabled=True, audio_out_enabled=True, audio_out_10ms_chunks=2),
+        )
+
+        def send(msg: dict):
+            task = holder.get("task")
+            if task is not None:
+                asyncio.ensure_future(task.queue_frame(OutputTransportMessageUrgentFrame(message=msg)))
 
     else:
         transport = FastAPIWebsocketTransport(
@@ -228,14 +249,29 @@ async def run_bot(
     )
     holder["task"] = task
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info(f"client connected, talker={talker_key}")
-        send({"type": "ready", "talker": talker_key})
+    if livekit is not None:
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info("client disconnected")
-        await task.cancel()
+        @transport.event_handler("on_first_participant_joined")
+        async def on_first_joined(transport, participant_id):
+            logger.info(f"user joined LiveKit room, talker={talker_key}")
+            await asyncio.sleep(0.5)  # let the user's data subscription settle
+            send({"type": "ready", "talker": talker_key})
+
+        @transport.event_handler("on_participant_disconnected")
+        async def on_participant_left(transport, participant_id):
+            logger.info("user left LiveKit room")
+            await task.cancel()
+
+    else:
+
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, client):
+            logger.info(f"client connected, talker={talker_key}")
+            send({"type": "ready", "talker": talker_key})
+
+        @transport.event_handler("on_client_disconnected")
+        async def on_client_disconnected(transport, client):
+            logger.info("client disconnected")
+            await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

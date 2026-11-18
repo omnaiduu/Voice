@@ -21,6 +21,22 @@ browser mic ──WebRTC (P2P)──► Silero VAD + Smart Turn v3 ──► Par
 * **Turn-taking:** Silero VAD (0.2 s) + Smart Turn v3 decides you're done (semantic + intonation), Parakeet then
   transcribes the whole segment in tens of ms. Barge-in (interrupting the bot) works; use headphones.
 
+## Connection: LiveKit Cloud (default)
+
+Direct peer-to-peer WebRTC to a Modal container is blocked on many networks, so the default is
+LiveKit Cloud (free Build plan: 5,000 participant-minutes/month, hard cap, no card). On **Start talking**
+the server creates a fresh room, the bot joins it from the GPU container, and the page joins with
+`livekit-client`. Create the credentials once in the Modal dashboard → **Secrets** → Custom, named
+**`livekit`**:
+
+```
+LIVEKIT_URL=wss://<your-project>.livekit.cloud
+LIVEKIT_API_KEY=API...
+LIVEKIT_API_SECRET=...
+```
+
+(cloud.livekit.io → your project → Settings → Keys.) "Direct peer-to-peer" is still in the dropdown.
+
 ## Deploy (from your laptop, ~2 commands)
 
 Modal's client talks gRPC, which the Claude cloud sandbox can't proxy, so deploy from your machine:

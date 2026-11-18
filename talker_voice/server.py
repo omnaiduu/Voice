@@ -190,6 +190,46 @@ async def ws_call(websocket: WebSocket, talker: str, voice: str = DEFAULT_VOICE,
     await run_bot(talker, voice, max(0.7, min(speed, 1.4)), websocket=websocket)
 
 
+class LiveKitStart(BaseModel):
+    talker: str
+    voice: str = DEFAULT_VOICE
+    speed: float = 1.0
+
+
+@app.post("/api/livekit/start")
+async def livekit_start(r: LiveKitStart):
+    """Create a fresh LiveKit room, start the bot in it, return the user's join token."""
+    import secrets
+
+    from livekit import api as lk_api
+
+    from .bot import run_bot
+
+    url, key, secret = (os.environ.get(k) for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"))
+    if not (url and key and secret):
+        raise HTTPException(500, "LiveKit secret missing: create Modal secret 'livekit' (see README)")
+    if r.talker not in ENABLED_TALKERS:
+        raise HTTPException(400, f"unknown talker {r.talker}")
+    for need in ("asr", "tts", r.talker):
+        if STATUS.get(need) != "ready":
+            raise HTTPException(503, f"{need} is {STATUS.get(need)}; wait for it to be ready")
+    voice = r.voice if r.voice in VOICES else DEFAULT_VOICE
+
+    if _current["task"] is not None:  # one user at a time
+        _current["task"].cancel()
+
+    room = f"talker-{secrets.token_hex(4)}"
+
+    def token(identity: str, agent: bool) -> str:
+        t = lk_api.AccessToken(key, secret).with_identity(identity).with_name(identity)
+        return t.with_grants(lk_api.VideoGrants(room_join=True, room=room, agent=agent)).to_jwt()
+
+    _current["task"] = asyncio.create_task(
+        run_bot(r.talker, voice, max(0.7, min(r.speed, 1.4)), livekit=(url, token("talker-bot", True), room))
+    )
+    return {"url": url, "token": token("you", False), "room": room}
+
+
 class ChatReq(BaseModel):
     talker: str
     text: str
