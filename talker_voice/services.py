@@ -303,6 +303,22 @@ class SoftInterruptOutput(FrameProcessor):
             await self._interrupt(frame, direction)
         elif isinstance(frame, SystemFrame) or direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
+        elif isinstance(frame, OutputAudioRawFrame):
+            # TTS often delivers a whole sentence as ONE frame (Kokoro: 2-4 s). Slice it into
+            # 20 ms pieces so the unplayed remainder stays here (fadeable) instead of being
+            # handed to the transport's 1 s buffer in one go, where an interruption is a hard cut.
+            self._ensure_task()
+            step = max(2, int(frame.sample_rate * 0.02) * 2 * max(frame.num_channels, 1))
+            audio = frame.audio
+            for i in range(0, len(audio), step):
+                piece = audio[i : i + step]
+                if isinstance(frame, TTSAudioRawFrame):
+                    f = TTSAudioRawFrame(audio=piece, sample_rate=frame.sample_rate,
+                                         num_channels=frame.num_channels, context_id=frame.context_id)
+                else:
+                    f = OutputAudioRawFrame(audio=piece, sample_rate=frame.sample_rate,
+                                            num_channels=frame.num_channels)
+                await self._q.put((f, direction))
         else:
             self._ensure_task()
             await self._q.put((frame, direction))

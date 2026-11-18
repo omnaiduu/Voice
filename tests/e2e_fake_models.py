@@ -12,6 +12,7 @@ data-channel events the UI shows.
 
 import asyncio
 import json
+import os
 import math
 import struct
 import sys
@@ -43,8 +44,10 @@ async def fake_tts(req):
     sr = 24000
     # 1.5 s per sentence so the bot is still talking when the second utterance starts
     pcm = b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / sr))) for i in range(int(sr * 1.5)))
-    for i in range(0, len(pcm), 4801):  # odd chunk size on purpose (tests int16 re-alignment)
-        await resp.write(pcm[i : i + 4801])
+    # BIG_CHUNKS=1 mimics Kokoro: the whole sentence arrives as one chunk
+    size = len(pcm) if os.environ.get("BIG_CHUNKS") else 4801  # 4801: odd size tests int16 re-alignment
+    for i in range(0, len(pcm), size):
+        await resp.write(pcm[i : i + size])
     return resp
 
 
