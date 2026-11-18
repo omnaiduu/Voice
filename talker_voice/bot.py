@@ -7,6 +7,7 @@ browser mic -> WebRTC -> Silero VAD + Smart Turn v3 (end of turn)
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from loguru import logger
@@ -19,6 +20,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputTransportMessageUrgentFrame,
     TTSAudioRawFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -36,10 +38,12 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
 from .config import ASR_PORT, DEFAULT_VOICE, TALKERS, TTS_PORT
 from .services import KokoroTTS, ParakeetSTT, SayExtractor
 from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
+from .ws_serializer import RawPCMSerializer
 
 VAD_STOP_SECS = 0.2  # short; Smart Turn v3 decides if the turn is really over
 
@@ -115,21 +119,49 @@ class LatencyObserver(BaseObserver):
             self._send({"type": "interrupted"})
 
 
-async def run_bot(webrtc_connection, talker_key: str, voice: str = DEFAULT_VOICE, speed: float = 1.0):
+async def run_bot(
+    talker_key: str,
+    voice: str = DEFAULT_VOICE,
+    speed: float = 1.0,
+    *,
+    webrtc_connection=None,
+    websocket=None,
+):
+    """Run one call. Pass exactly one of `webrtc_connection` (P2P) or `websocket`."""
     talker = TALKERS[talker_key]
+    holder: dict = {}
 
-    def send(msg: dict):
-        try:
-            webrtc_connection.send_app_message(msg)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"send_app_message failed: {e}")
+    if webrtc_connection is not None:
+        transport = SmallWebRTCTransport(
+            webrtc_connection=webrtc_connection,
+            params=TransportParams(audio_in_enabled=True, audio_out_enabled=True, audio_out_10ms_chunks=2),
+        )
+
+        def send(msg: dict):
+            try:
+                webrtc_connection.send_app_message(msg)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"send_app_message failed: {e}")
+
+    else:
+        transport = FastAPIWebsocketTransport(
+            websocket=websocket,
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                audio_out_10ms_chunks=2,
+                add_wav_header=False,
+                serializer=RawPCMSerializer(),
+            ),
+        )
+
+        def send(msg: dict):
+            # events travel on the same socket as the audio, as urgent (system) frames
+            task = holder.get("task")
+            if task is not None:
+                asyncio.ensure_future(task.queue_frame(OutputTransportMessageUrgentFrame(message=msg)))
 
     timer = TurnTimer(send)
-
-    transport = SmallWebRTCTransport(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(audio_in_enabled=True, audio_out_enabled=True, audio_out_10ms_chunks=2),
-    )
 
     async def on_asr(text: str, ms: float):
         timer.asr_ms = round(ms)
@@ -194,6 +226,7 @@ async def run_bot(webrtc_connection, talker_key: str, voice: str = DEFAULT_VOICE
         idle_timeout_secs=600,
         observers=[LatencyObserver(timer, send, llm, tts)],
     )
+    holder["task"] = task
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 import aiohttp
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -168,8 +168,26 @@ async def offer(o: Offer):
     conn = SmallWebRTCConnection(ICE_SERVERS)
     await conn.initialize(sdp=o.sdp, type=o.type)
     _current["conn"] = conn
-    _current["task"] = asyncio.create_task(run_bot(conn, o.talker, o.voice, max(0.7, min(o.speed, 1.4))))
+    _current["task"] = asyncio.create_task(
+        run_bot(o.talker, o.voice, max(0.7, min(o.speed, 1.4)), webrtc_connection=conn)
+    )
     return conn.get_answer()
+
+
+@app.websocket("/ws")
+async def ws_call(websocket: WebSocket, talker: str, voice: str = DEFAULT_VOICE, speed: float = 1.0):
+    """Audio over a WebSocket on the same HTTPS host: works behind any firewall/NAT."""
+    from .bot import run_bot
+
+    await websocket.accept()
+    missing = [n for n in ("asr", "tts", talker) if STATUS.get(n) != "ready"]
+    if talker not in ENABLED_TALKERS or missing:
+        await websocket.send_text(json.dumps({"type": "error", "text": f"not ready: {missing or talker}"}))
+        await websocket.close()
+        return
+    if voice not in VOICES:
+        voice = DEFAULT_VOICE
+    await run_bot(talker, voice, max(0.7, min(speed, 1.4)), websocket=websocket)
 
 
 class ChatReq(BaseModel):
