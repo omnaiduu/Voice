@@ -21,7 +21,7 @@ import os
 import modal
 
 APP_NAME = "talker-voice"
-REGION = [r.strip() for r in os.environ.get("VOICE_REGION", "ap-south").split(",") if r.strip()]
+REGION = [r.strip() for r in os.environ.get("VOICE_REGION", "ap-south,ap").split(",") if r.strip()]
 GPU = [g.strip() for g in os.environ.get("VOICE_GPU", "L40S,A100-80GB").split(",") if g.strip()]
 TALKERS = os.environ.get("TALKERS", "gemma-4-e2b,gemma-4-e4b")
 # Route the HTTP signalling through Mumbai too (only valid on first deploy of the app).
@@ -86,7 +86,7 @@ secrets = [modal.Secret.from_dict({"HF_TOKEN": os.environ["HF_TOKEN"]})] if os.e
     secrets=secrets,
     env={"TALKERS": TALKERS, "MODAL_REGION": ",".join(REGION)},
     max_containers=1,  # one user, one container: the WebRTC peer is always this container
-    scaledown_window=10 * 60,  # stays warm 10 min after the page stops pinging
+    scaledown_window=5 * 60,  # GPU shuts down 5 min after the page stops pinging
     timeout=60 * 60,
 )
 @modal.concurrent(max_inputs=32)

@@ -114,7 +114,7 @@ async function pollStatus() {
     renderStatus(s);
   } catch (e) { $("status").textContent = "server unreachable…"; }
   const idleMin = (Date.now() - lastActivity) / 60000;
-  if (!connected && idleMin > 15) {   // stop pinging so the GPU can shut down
+  if (!connected && idleMin > 5) {   // stop pinging so the GPU can shut down
     $("status").innerHTML += '<p class="hint">Idle: stopped polling so the GPU can scale to zero. Reload to wake it.</p>';
     clearInterval(statusTimer); return;
   }
