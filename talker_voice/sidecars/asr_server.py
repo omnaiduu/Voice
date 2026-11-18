@@ -24,7 +24,7 @@ logging.getLogger("nemo_logger").setLevel(logging.ERROR)
 import nemo.collections.asr as nemo_asr  # noqa: E402
 
 model = nemo_asr.models.ASRModel.from_pretrained(model_name=MODEL)
-model = model.to("cuda").to(torch.bfloat16).eval()
+model = model.to("cuda").eval()  # keep fp32 weights; autocast runs the math in bf16
 dec = model.cfg.decoding
 if dec.strategy != "beam":
     dec.strategy = "greedy_batch"

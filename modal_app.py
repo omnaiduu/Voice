@@ -120,3 +120,15 @@ def smoke():
             failed.append(name)
     if failed:
         raise SystemExit(f"FAILED: {failed}")
+
+
+@app.function(image=image, gpu="T4", volumes={"/cache": cache}, timeout=20 * 60)
+def asr_check():
+    """Cheap GPU check of the Parakeet sidecar (load + warm-up transcription): modal run modal_app.py::asr_check"""
+    import subprocess
+
+    code = "import runpy; runpy.run_path('/root/talker_voice/sidecars/asr_server.py', run_name='check'); print('ASR_OK')"
+    r = subprocess.run(["/opt/asr/bin/python", "-c", code], capture_output=True, text=True)
+    print((r.stdout + r.stderr)[-1500:])
+    if "ASR_OK" not in r.stdout:
+        raise SystemExit("ASR check failed")
