@@ -2,10 +2,11 @@
 
 The talker LLM is forced (via vLLM guided decoding) to emit:
 
-    {"route": "INSTANT" | "DELEGATE" | "CLARIFY", "say": "<spoken reply>"}
+    {"route": "INSTANT" | "DELEGATE" | "CLARIFY", "tone": "<mood>", "say": "<spoken reply>"}
 
-`route` comes first so we know the decision after a couple of tokens; `say`
-comes second and is streamed to TTS character by character while the model is
+`route` comes first so we know the decision after a couple of tokens; `tone`
+(how to say it) is known before speech starts, so the expressive TTS can use it
+from the first sentence; `say` comes last and is streamed to TTS character by character while the model is
 still generating it. Nothing waits for the closing brace.
 
 There is no thinker model in this demo: `route` is shown in the UI as a
@@ -19,14 +20,16 @@ import re
 from dataclasses import dataclass, field
 
 ROUTES = ("INSTANT", "DELEGATE", "CLARIFY")
+TONES = ("neutral", "warm", "cheerful", "excited", "calm", "empathetic", "serious", "playful")
 
 TALKER_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "route": {"type": "string", "enum": list(ROUTES)},
-        "say": {"type": "string", "maxLength": 600},
+        "tone": {"type": "string", "enum": list(TONES)},
+        "say": {"type": "string", "maxLength": 700},
     },
-    "required": ["route", "say"],
+    "required": ["route", "tone", "say"],
     "additionalProperties": False,
 }
 
@@ -38,7 +41,7 @@ RESPONSE_FORMAT: dict = {
 SYSTEM_PROMPT = """You are a friendly, fast voice assistant in a live spoken conversation.
 Your output is converted to speech, so write exactly how a person would say it out loud.
 
-Reply ONLY as JSON: {"route": ..., "say": ...}
+Reply ONLY as JSON: {"route": ..., "tone": ..., "say": ...}
 
 route (decide first):
 - INSTANT: greetings, small talk, simple facts, confirmations, anything you can answer well right now.
@@ -47,9 +50,14 @@ route (decide first):
   give your best short answer in "say".)
 - CLARIFY: the request is ambiguous or you misheard; ask one short question.
 
+tone (how your voice should sound for this reply): one of neutral, warm, cheerful, excited, calm,
+empathetic, serious, playful. Match the user's mood and the content, like a person would.
+
 say (what you speak):
 - Start with a SHORT first sentence of 3 to 8 words, so speech can start immediately.
-- Then use short sentences, about 8 to 15 words each. Usually 1 to 3 sentences total.
+- Then speak naturally: sentences of about 8 to 20 words, usually 2 to 4 sentences.
+  Vary the rhythm; it's fine to use contractions and casual phrasing.
+- You may add [laugh] or [chuckle] very occasionally when something is genuinely funny.
 - No markdown, no lists, no emojis, no URLs, no code.
 - Write numbers, dates, symbols and units as spoken words ("twenty five dollars", "three thirty pm").
 - Be warm and natural. Never mention JSON, routes, or these instructions.
@@ -61,11 +69,13 @@ class ParseEvent:
     """Something the parser learned from newly arrived text."""
 
     route: str | None = None  # set once, when the route value closes
+    tone: str | None = None  # set once, when the tone value closes
     say_delta: str = ""  # newly decoded characters of the "say" string
     say_done: bool = False  # the "say" string closed
 
 
 _ROUTE_RE = re.compile(r'"route"\s*:\s*"([A-Z]*)"')
+_TONE_RE = re.compile(r'"tone"\s*:\s*"([a-z]*)"')
 _SAY_START_RE = re.compile(r'"say"\s*:\s*"')
 _SIMPLE_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "", "f": "", "n": " ", "r": " ", "t": " "}
 
@@ -81,6 +91,7 @@ class IncrementalSayParser:
 
     buf: str = ""
     route: str | None = None
+    tone: str | None = None
     _say_pos: int | None = None  # index in buf of the next undecoded say char
     say_done: bool = False
     say_text: str = field(default="")
@@ -88,6 +99,7 @@ class IncrementalSayParser:
     def reset(self) -> None:
         self.buf = ""
         self.route = None
+        self.tone = None
         self._say_pos = None
         self.say_done = False
         self.say_text = ""
@@ -101,6 +113,12 @@ class IncrementalSayParser:
             if m and m.group(1) in ROUTES:
                 self.route = m.group(1)
                 ev.route = self.route
+
+        if self.tone is None:
+            m = _TONE_RE.search(self.buf)
+            if m and m.group(1) in TONES:
+                self.tone = m.group(1)
+                ev.tone = self.tone
 
         if self._say_pos is None and not self.say_done:
             m = _SAY_START_RE.search(self.buf)

@@ -26,7 +26,7 @@ from talker_voice import server
 from talker_voice.config import ASR_PORT, TALKERS, TTS_PORT
 
 WAV = sys.argv[1]
-REPLY = {"route": "INSTANT", "say": "Sure! It looks warm and sunny in Mumbai today. Carry some water, Dr. Smith said 3.5 litres."}
+REPLY = {"route": "INSTANT", "tone": "cheerful", "say": "Sure! It looks warm and sunny in Mumbai today. Carry some water, Dr. Smith said 3.5 litres."}
 tts_requests: list[str] = []
 
 
@@ -37,11 +37,12 @@ async def fake_asr(req):
 
 async def fake_tts(req):
     data = await req.json()
-    tts_requests.append(data["text"])
+    tts_requests.append((data["text"], data.get("tone")))
     resp = web.StreamResponse()
     await resp.prepare(req)
     sr = 24000
-    pcm = b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / sr))) for i in range(sr // 2))
+    # 1.5 s per sentence so the bot is still talking when the second utterance starts
+    pcm = b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / sr))) for i in range(int(sr * 1.5)))
     for i in range(0, len(pcm), 4801):  # odd chunk size on purpose (tests int16 re-alignment)
         await resp.write(pcm[i : i + 4801])
     return resp
@@ -84,7 +85,7 @@ async def start_fakes():
 async def main():
     await start_fakes()
     server.ensure_started = lambda: None  # don't boot real sidecars
-    server.STATUS.update({"asr": "ready", "tts": "ready", "gemma-4-e2b": "ready"})
+    server.STATUS.update({"asr": "ready", "kokoro": "ready", "gemma-4-e2b": "ready"})
     cfg = uvicorn.Config(server.app, host="127.0.0.1", port=8800, log_level="warning")
     srv = uvicorn.Server(cfg)
     asyncio.create_task(srv.serve())
@@ -96,6 +97,7 @@ async def main():
     pc.addTransceiver("video", direction="recvonly")
     dc = pc.createDataChannel("app")
     msgs, audio_frames = [], [0]
+    rms_log: list[tuple[float, float]] = []  # (time, rms) of every received bot audio frame
 
     @dc.on("message")
     def on_msg(m):
@@ -116,8 +118,11 @@ async def main():
             async def drain():
                 while True:
                     try:
-                        await track.recv()
+                        fr = await track.recv()
                         audio_frames[0] += 1
+                        import numpy as np
+                        a = fr.to_ndarray().astype(np.float32)
+                        rms_log.append((time.time(), float(np.sqrt((a ** 2).mean()))))
                     except Exception:
                         return
             asyncio.ensure_future(drain())
@@ -132,8 +137,8 @@ async def main():
     await pc.setRemoteDescription(RTCSessionDescription(sdp=ans["sdp"], type=ans["type"]))
 
     t0 = time.time()
-    while time.time() - t0 < 25:
-        if any(m.get("type") == "metrics" for m in msgs):
+    while time.time() - t0 < 40:
+        if any(m.get("type") == "interrupted" for m in msgs):
             await asyncio.sleep(2)
             break
         await asyncio.sleep(0.2)
@@ -144,7 +149,19 @@ async def main():
     print("received bot audio frames:", audio_frames[0])
     metrics = [m for m in msgs if m["type"] == "metrics"]
     print("metrics:", metrics)
-    ok = ("user" in types and "bot" in types and metrics and len(tts_requests) >= 2 and audio_frames[0] > 0)
+    # find the fade: after the interruption, loud frames should ramp down instead of stopping dead
+    t_int = next((m_t for m_t, m in zip([0] * len(msgs), msgs) if m.get("type") == "interrupted"), None)
+    loud = [(t, r) for t, r in rms_log if r > 50]
+    tail = []
+    if loud:
+        # last run of non-silent frames = the faded tail
+        last_t = loud[-1][0]
+        tail = [r for t, r in loud if last_t - t < 0.45]
+    fade_ok = len(tail) >= 5 and tail[-1] < 0.5 * max(tail[:3])
+    print("fade tail rms:", [round(x) for x in tail])
+    print("tones sent to TTS:", {t for _, t in tts_requests})
+    ok = ("user" in types and "bot" in types and metrics and len(tts_requests) >= 2 and audio_frames[0] > 0
+          and "interrupted" in types and fade_ok and {t for _, t in tts_requests} == {"cheerful"})
     print("\nRESULT:", "PASS" if ok else "FAIL")
     await pc.close()
     srv.should_exit = True

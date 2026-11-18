@@ -3,7 +3,8 @@
 import os
 
 ASR_PORT = 8101
-TTS_PORT = 8102
+TTS_PORT = 8102  # Kokoro
+QWEN_TTS_PORT = 8103
 
 # Talker models served by vLLM (each in its own process/port on the same GPU).
 # gpu_mem = vLLM --gpu-memory-utilization (fraction of the WHOLE GPU) for that model.
@@ -30,5 +31,22 @@ ENABLED_TALKERS = [
 
 DEFAULT_VOICE = "af_heart"
 VOICES = {"af_heart": "Heart (female, US)", "am_michael": "Michael (male, US)"}
+
+# TTS engines; all speak the same sidecar HTTP contract (see services.SidecarTTS).
+TTS_ENGINES: dict[str, dict] = {
+    "kokoro": {
+        "label": "Kokoro 82M (fast, stable)",
+        "port": TTS_PORT,
+        "voices": VOICES,
+        "default_voice": DEFAULT_VOICE,
+    },
+    "qwen3-tts": {
+        "label": "Qwen3-TTS 1.7B (expressive)",
+        "port": QWEN_TTS_PORT,
+        "voices": {"Ryan": "Ryan (male)", "Aiden": "Aiden (male)", "Vivian": "Vivian (female)", "Serena": "Serena (female)"},
+        "default_voice": "Ryan",
+    },
+}
+ENABLED_TTS = [t.strip() for t in os.environ.get("TTS_ENGINES", "kokoro,qwen3-tts").split(",") if t.strip()]
 
 MAX_MODEL_LEN = 4096  # short voice turns; keeps KV cache small

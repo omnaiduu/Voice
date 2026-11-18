@@ -50,3 +50,14 @@ def test_reset():
     p.reset()
     ev = p.feed('{"route":"CLARIFY","say":"b"}')
     assert ev.route == "CLARIFY" and ev.say_delta == "b"
+
+
+def test_tone_parsed_before_say():
+    p = IncrementalSayParser()
+    ev = p.feed('{"route": "INSTANT", "tone": "cheerful", "say": "Hi')
+    assert ev.route == "INSTANT" and ev.tone == "cheerful" and ev.say_delta == "Hi"
+
+
+def test_schema_order_route_tone_say():
+    from talker_voice.structured import TALKER_SCHEMA
+    assert list(TALKER_SCHEMA["properties"]) == ["route", "tone", "say"]

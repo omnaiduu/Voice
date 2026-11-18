@@ -10,6 +10,7 @@ small gap).
 """
 
 import os
+import re
 
 import numpy as np
 import torch
@@ -22,6 +23,10 @@ from pydantic import BaseModel
 PORT = int(os.environ.get("TTS_PORT", "8102"))
 SAMPLE_RATE = 24000
 GAP_MS = int(os.environ.get("TTS_GAP_MS", "180"))  # pause appended after each sentence
+
+TAGS = re.compile(r"\[(laugh|laughs|chuckle|chuckles|sigh|sighs|cough)\]", re.I)
+# Kokoro has no emotion control: nudge pace a little with the talker's tone
+TONE_SPEED = {"excited": 1.08, "cheerful": 1.04, "playful": 1.04, "calm": 0.94, "empathetic": 0.95, "serious": 0.97}
 
 kmodel = KModel().to("cuda").eval()
 pipeline = KPipeline(lang_code="a", model=kmodel, device="cuda")
@@ -41,6 +46,9 @@ def _to_pcm16(audio: np.ndarray) -> bytes:
 
 
 def synth(text: str, voice: str, speed: float):
+    text = TAGS.sub("", text).strip()
+    if not text:
+        return
     pieces = list(pipeline(text, voice=voice, speed=speed))  # kokoro splits long text itself
     for n, (_, _, audio) in enumerate(pieces):
         if audio is None:
@@ -64,6 +72,7 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "af_heart"
     speed: float = 1.0
+    tone: str = "neutral"
 
 
 @app.get("/health")
@@ -73,7 +82,8 @@ def health():
 
 @app.post("/tts")
 def tts(req: TTSRequest):
-    return StreamingResponse(synth(req.text, req.voice, req.speed), media_type="application/octet-stream")
+    speed = req.speed * TONE_SPEED.get(req.tone, 1.0)
+    return StreamingResponse(synth(req.text, req.voice, speed), media_type="application/octet-stream")
 
 
 if __name__ == "__main__":

@@ -24,17 +24,33 @@ from fastapi.responses import FileResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from .config import ASR_PORT, DEFAULT_VOICE, ENABLED_TALKERS, MAX_MODEL_LEN, TALKERS, TTS_PORT, VOICES
+from .config import (
+    ASR_PORT,
+    DEFAULT_VOICE,
+    ENABLED_TALKERS,
+    ENABLED_TTS,
+    MAX_MODEL_LEN,
+    TALKERS,
+    TTS_ENGINES,
+    VOICES,
+)
 from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
 
 STATIC = Path(__file__).parent / "static"
 VENV_ASR = os.environ.get("VENV_ASR", "/opt/asr/bin/python")
 VENV_TTS = os.environ.get("VENV_TTS", "/opt/tts/bin/python")
+VENV_QWEN_TTS = os.environ.get("VENV_QWEN_TTS", "/opt/qwentts/bin/python")
 VLLM_BIN = os.environ.get("VLLM_BIN", "/opt/vllm/bin/vllm")
 SIDECARS = Path(__file__).parent / "sidecars"
 ICE_SERVERS = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 
-STATUS: dict[str, str] = {"asr": "starting", "tts": "starting"} | {k: "waiting" for k in ENABLED_TALKERS}
+STATUS: dict[str, str] = (
+    {"asr": "starting"} | {k: "starting" for k in ENABLED_TTS} | {k: "waiting" for k in ENABLED_TALKERS}
+)
+TTS_SIDECARS = {
+    "kokoro": (VENV_TTS, "tts_server.py", "TTS_PORT"),
+    "qwen3-tts": (VENV_QWEN_TTS, "qwen_tts_server.py", "QWEN_TTS_PORT"),
+}
 _procs: list[subprocess.Popen] = []
 _started = False
 _lock = threading.Lock()
@@ -68,12 +84,18 @@ def _spawn(cmd: list[str], env_extra: dict | None = None) -> subprocess.Popen:
 
 def _boot():
     # 1) speech models (small) first, in parallel
+    waits = []
     asr = _spawn([VENV_ASR, str(SIDECARS / "asr_server.py")], {"ASR_PORT": str(ASR_PORT)})
-    tts = _spawn([VENV_TTS, str(SIDECARS / "tts_server.py")], {"TTS_PORT": str(TTS_PORT)})
-    t_asr = threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{ASR_PORT}/health", "asr", asr))
-    t_tts = threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{TTS_PORT}/health", "tts", tts))
-    t_asr.start(), t_tts.start()
-    t_asr.join(), t_tts.join()
+    waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{ASR_PORT}/health", "asr", asr)))
+    for eng in ENABLED_TTS:
+        venv, script, port_env = TTS_SIDECARS[eng]
+        port = TTS_ENGINES[eng]["port"]
+        p = _spawn([venv, str(SIDECARS / script)], {port_env: str(port)})
+        waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{port}/health", eng, p)))
+    for t in waits:
+        t.start()
+    for t in waits:
+        t.join()
 
     # 2) talkers one at a time (vLLM sizes its memory from what is free at start)
     for key in ENABLED_TALKERS:
@@ -130,15 +152,34 @@ async def status():
         "talkers": {k: TALKERS[k]["label"] for k in ENABLED_TALKERS},
         "voices": VOICES,
         "default_voice": DEFAULT_VOICE,
+        "tts_engines": {
+            k: {"label": TTS_ENGINES[k]["label"], "voices": TTS_ENGINES[k]["voices"],
+                "default_voice": TTS_ENGINES[k]["default_voice"]}
+            for k in ENABLED_TTS
+        },
         "region": os.environ.get("MODAL_REGION", "unknown"),
     }
+
+
+def _resolve(talker: str, tts: str, voice: str | None) -> tuple[str, str]:
+    """Validate a call request; returns (tts_engine, voice) or raises HTTPException."""
+    if talker not in ENABLED_TALKERS:
+        raise HTTPException(400, f"unknown talker {talker}")
+    if tts not in ENABLED_TTS:
+        raise HTTPException(400, f"unknown tts {tts}")
+    for need in ("asr", tts, talker):
+        if STATUS.get(need) != "ready":
+            raise HTTPException(503, f"{need} is {STATUS.get(need)}; wait for it to be ready")
+    voices = TTS_ENGINES[tts]["voices"]
+    return tts, (voice if voice in voices else TTS_ENGINES[tts]["default_voice"])
 
 
 class Offer(BaseModel):
     sdp: str
     type: str
     talker: str
-    voice: str = DEFAULT_VOICE
+    tts: str = "kokoro"
+    voice: str | None = None
     speed: float = 1.0
 
 
@@ -148,13 +189,7 @@ async def offer(o: Offer):
 
     from .bot import run_bot
 
-    if o.talker not in ENABLED_TALKERS:
-        raise HTTPException(400, f"unknown talker {o.talker}")
-    for need in ("asr", "tts", o.talker):
-        if STATUS.get(need) != "ready":
-            raise HTTPException(503, f"{need} is {STATUS.get(need)}; wait for it to be ready")
-    if o.voice not in VOICES:
-        o.voice = DEFAULT_VOICE
+    tts, voice = _resolve(o.talker, o.tts, o.voice)
 
     # one user at a time: drop any previous call
     if _current["conn"] is not None:
@@ -169,30 +204,30 @@ async def offer(o: Offer):
     await conn.initialize(sdp=o.sdp, type=o.type)
     _current["conn"] = conn
     _current["task"] = asyncio.create_task(
-        run_bot(o.talker, o.voice, max(0.7, min(o.speed, 1.4)), webrtc_connection=conn)
+        run_bot(o.talker, voice, max(0.7, min(o.speed, 1.4)), webrtc_connection=conn, tts_engine=tts)
     )
     return conn.get_answer()
 
 
 @app.websocket("/ws")
-async def ws_call(websocket: WebSocket, talker: str, voice: str = DEFAULT_VOICE, speed: float = 1.0):
+async def ws_call(websocket: WebSocket, talker: str, tts: str = "kokoro", voice: str | None = None, speed: float = 1.0):
     """Audio over a WebSocket on the same HTTPS host: works behind any firewall/NAT."""
     from .bot import run_bot
 
     await websocket.accept()
-    missing = [n for n in ("asr", "tts", talker) if STATUS.get(n) != "ready"]
-    if talker not in ENABLED_TALKERS or missing:
-        await websocket.send_text(json.dumps({"type": "error", "text": f"not ready: {missing or talker}"}))
+    try:
+        tts, voice = _resolve(talker, tts, voice)
+    except HTTPException as e:
+        await websocket.send_text(json.dumps({"type": "error", "text": e.detail}))
         await websocket.close()
         return
-    if voice not in VOICES:
-        voice = DEFAULT_VOICE
-    await run_bot(talker, voice, max(0.7, min(speed, 1.4)), websocket=websocket)
+    await run_bot(talker, voice, max(0.7, min(speed, 1.4)), websocket=websocket, tts_engine=tts)
 
 
 class LiveKitStart(BaseModel):
     talker: str
-    voice: str = DEFAULT_VOICE
+    tts: str = "kokoro"
+    voice: str | None = None
     speed: float = 1.0
 
 
@@ -208,12 +243,7 @@ async def livekit_start(r: LiveKitStart):
     url, key, secret = (os.environ.get(k) for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"))
     if not (url and key and secret):
         raise HTTPException(500, "LiveKit secret missing: create Modal secret 'livekit' (see README)")
-    if r.talker not in ENABLED_TALKERS:
-        raise HTTPException(400, f"unknown talker {r.talker}")
-    for need in ("asr", "tts", r.talker):
-        if STATUS.get(need) != "ready":
-            raise HTTPException(503, f"{need} is {STATUS.get(need)}; wait for it to be ready")
-    voice = r.voice if r.voice in VOICES else DEFAULT_VOICE
+    tts, voice = _resolve(r.talker, r.tts, r.voice)
 
     if _current["task"] is not None:  # one user at a time
         _current["task"].cancel()
@@ -225,7 +255,8 @@ async def livekit_start(r: LiveKitStart):
         return t.with_grants(lk_api.VideoGrants(room_join=True, room=room, agent=agent)).to_jwt()
 
     _current["task"] = asyncio.create_task(
-        run_bot(r.talker, voice, max(0.7, min(r.speed, 1.4)), livekit=(url, token("talker-bot", True), room))
+        run_bot(r.talker, voice, max(0.7, min(r.speed, 1.4)), livekit=(url, token("talker-bot", True), room),
+                tts_engine=tts)
     )
     return {"url": url, "token": token("you", False), "room": room}
 

@@ -45,8 +45,8 @@ try:  # optional: only needed for the LiveKit mode
 except Exception:  # noqa: BLE001
     LiveKitParams = LiveKitTransport = None
 
-from .config import ASR_PORT, DEFAULT_VOICE, TALKERS, TTS_PORT
-from .services import KokoroTTS, ParakeetSTT, SayExtractor
+from .config import ASR_PORT, DEFAULT_VOICE, TALKERS, TTS_ENGINES
+from .services import ParakeetSTT, SayExtractor, SidecarTTS, SoftInterruptOutput
 from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
 from .ws_serializer import RawPCMSerializer
 
@@ -132,6 +132,7 @@ async def run_bot(
     webrtc_connection=None,
     websocket=None,
     livekit: tuple[str, str, str] | None = None,
+    tts_engine: str = "kokoro",
 ):
     """Run one call. Pass exactly one of `webrtc_connection` (P2P), `websocket`,
     or `livekit=(url, bot_token, room_name)` (LiveKit Cloud SFU)."""
@@ -210,20 +211,26 @@ async def run_bot(
         timer.mark("route_decided")
         send({"type": "route", "route": route})
 
+    async def on_tone(tone: str):
+        tts.tone = tone  # arrives before "say", so the first sentence already uses it
+        send({"type": "tone", "tone": tone})
+
     async def on_first_say():
         timer.mark("first_say_text")
 
     async def on_done(route, say, raw):
-        send({"type": "bot", "route": route, "text": say, "raw": raw})
+        send({"type": "bot", "route": route, "tone": tts.tone, "text": say, "raw": raw})
 
-    say = SayExtractor(on_route=on_route, on_first_say=on_first_say, on_done=on_done)
-    tts = KokoroTTS(url=f"http://127.0.0.1:{TTS_PORT}/tts", voice=voice, speed=speed)
+    say = SayExtractor(on_route=on_route, on_tone=on_tone, on_first_say=on_first_say, on_done=on_done)
+    tts = SidecarTTS(url=f"http://127.0.0.1:{TTS_ENGINES[tts_engine]['port']}/tts", voice=voice, speed=speed)
+    soft = SoftInterruptOutput(fade_ms=300)
 
     context = LLMContext([{"role": "system", "content": SYSTEM_PROMPT}])
     aggregators = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
+            # start_secs 0.3: ignore very short noises/"mm" so the bot isn't cut off by accident
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3, stop_secs=VAD_STOP_SECS)),
         ),
     )
 
@@ -235,6 +242,7 @@ async def run_bot(
             llm,
             say,
             tts,
+            soft,  # fades the bot out (~0.3 s) instead of a hard cut when you interrupt
             transport.output(),
             aggregators.assistant(),
         ]
