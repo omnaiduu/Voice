@@ -101,7 +101,8 @@ def _boot():
     for eng in ENABLED_TTS:
         venv, script, port_env = TTS_SIDECARS[eng]
         port = TTS_ENGINES[eng]["port"]
-        p = _spawn([venv, str(SIDECARS / script)], {port_env: str(port)})
+        # qwen-tts venv has no hf_transfer; the global HF_HUB_ENABLE_HF_TRANSFER=1 would make it crash
+        p = _spawn([venv, str(SIDECARS / script)], {port_env: str(port), "HF_HUB_ENABLE_HF_TRANSFER": "0"})
         waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{port}/health", eng, p)))
     for t in waits:
         t.start()
