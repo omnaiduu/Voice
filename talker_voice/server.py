@@ -131,25 +131,25 @@ def _gpu_total_gib() -> float:
 
 
 def _boot():
-    # 1) speech models (small) first, in parallel
+    """Load everything as parallel as is safe:
+    - remote TTS (own GPU) and the small speech sidecars start immediately, in background threads;
+    - the Gemma talkers start right away too, one vLLM at a time (two vLLMs profiling GPU memory
+      at the same moment on one card is a known way to crash), so you can talk once STT + TTS + E2B are up.
+    """
     waits = []
-    asr = _spawn([VENV_ASR, str(SIDECARS / "asr_server.py")], {"ASR_PORT": str(ASR_PORT)})
-    waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{ASR_PORT}/health", "asr", asr)))
     for eng in ENABLED_TTS:
         if TTS_ENGINES[eng].get("remote_function"):
-            waits.append(threading.Thread(target=_boot_remote_tts, args=(eng,)))
+            threading.Thread(target=_boot_remote_tts, args=(eng,), daemon=True).start()
             continue
         venv, script, port_env = TTS_SIDECARS[eng]
         port = TTS_ENGINES[eng]["port"]
-        # qwen-tts venv has no hf_transfer; the global HF_HUB_ENABLE_HF_TRANSFER=1 would make it crash
         p = _spawn([venv, str(SIDECARS / script)], {port_env: str(port), "HF_HUB_ENABLE_HF_TRANSFER": "0"})
         waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{port}/health", eng, p)))
+    asr = _spawn([VENV_ASR, str(SIDECARS / "asr_server.py")], {"ASR_PORT": str(ASR_PORT)})
+    waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{ASR_PORT}/health", "asr", asr)))
     for t in waits:
         t.start()
-    for t in waits:
-        t.join()
 
-    # 2) talkers one at a time (vLLM sizes its memory from what is free at start)
     total = _gpu_total_gib()
     logger.info(f"GPU total memory: {total:.1f} GiB")
     for key in ENABLED_TALKERS:
@@ -168,6 +168,8 @@ def _boot():
         extra = os.environ.get("VLLM_EXTRA_ARGS", "").split()
         p = _spawn(cmd + extra)
         _wait_http(f"http://127.0.0.1:{cfg['port']}/health", key, p)
+    for t in waits:
+        t.join()
     logger.info(f"boot finished: {STATUS}")
 
 
