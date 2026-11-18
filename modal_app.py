@@ -132,7 +132,7 @@ def qwen_tts():
     memory=32 * 1024,
     volumes={"/cache": cache},
     secrets=secrets,
-    env={"TALKERS": TALKERS, "MODAL_REGION": ",".join(REGION), "APP_NAME": APP_NAME},
+    env={"TALKERS": TALKERS, "MODAL_REGION": ",".join(REGION), "APP_NAME": APP_NAME, "TTS_ENGINES": os.environ.get("TTS_ENGINES", "kokoro")},
     max_containers=1,  # one user, one container: the WebRTC peer is always this container
     scaledown_window=5 * 60,  # GPU shuts down 5 min after the page stops pinging
     timeout=60 * 60,

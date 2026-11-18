@@ -50,6 +50,6 @@ TTS_ENGINES: dict[str, dict] = {
         "default_voice": "ryan",
     },
 }
-ENABLED_TTS = [t.strip() for t in os.environ.get("TTS_ENGINES", "kokoro,qwen3-tts").split(",") if t.strip()]
+ENABLED_TTS = [t.strip() for t in os.environ.get("TTS_ENGINES", "kokoro").split(",") if t.strip()]
 
 MAX_MODEL_LEN = 4096  # short voice turns; keeps KV cache small

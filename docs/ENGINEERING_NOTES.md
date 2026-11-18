@@ -151,12 +151,32 @@ instant fake models. Sentence chunking verified: `"Sure!"` → `"It looks warm a
 On barge-in the bot's audio RMS ramps ~4000 → 62 over ~300 ms (`[…4007, 3626, 3113, … 741, 525, 332, 175, 62]`)
 instead of a hard cut. Tone `cheerful` reached the TTS for every sentence.
 
+### 5c-bis. Why the fade sometimes did NOT happen (user report, 18 Nov) and the fix
+User: "sometimes with the 4B, the volume is not decreasing the way I had told you". Root cause was in the
+audio path, not the model: Kokoro returns a **whole sentence as one PCM chunk** (often 2–4 s). Our
+`SoftInterruptOutput` paced frames in real time, but it released a frame as a unit, so a whole sentence was
+handed to LiveKit at once. LiveKit's `AudioSource` keeps a ~1 s internal queue
+(`audio_out_queue_size_ms=1000`) and on interruption calls `clear_queue()` → hard cut of exactly the
+audio we wanted to fade. The fade only works on audio we still hold. With the fake-TTS test the chunks were
+small (4801 bytes), so the bug was invisible locally. 4B seemed worse only because its replies were longer
+(bigger sentences = bigger chunks), and by chance.
+**Fix** (commit ac32e56): slice every incoming audio frame into **20 ms pieces** before queueing, then pace
+with a 40 ms lead. Now at most ~40 ms is inside LiveKit when barge-in happens and the next 300 ms is
+still ours to ramp down. The e2e test got a `BIG_CHUNKS=1` mode that mimics Kokoro; it fails before the fix
+and passes after. Not yet re-confirmed by the user live (credits ran out right after).
+
 ### 5d. Cold start and resources (measured)
 - First image build: ~7.7 min (`App deployed in 461 s`); later deploys reuse layers (~3–66 s).
 - Cold start with cached weights: Kokoro ready ~23–36 s, Parakeet ~45–58 s, E2B ~3 min, **all four ~5 min (312 s)**.
 - vLLM: E2B weights **9.18 GiB**, E4B **14.5 GiB** (measured). The run landed on an **A100-80GB**
   (Modal fallback; fraction-based `gpu-memory-utilization` 0.32/0.42 then gave huge 15–18 GiB KV caches).
-  Fixed afterwards: budgets in GiB (E2B 12, E4B 17.5) converted to a fraction for whichever GPU we get.
+  Fixed afterwards: budgets in GiB (E2B 14, E4B 19.5) converted to a fraction for whichever GPU we get.
+- **Parallel boot** (commit 99bb149): before, sidecars started one after another and the talkers waited for
+  the remote Qwen service. Now Kokoro, Parakeet and the first talker start together; remote TTS boots in a
+  background thread and never blocks. Measured on the last boot (18 Nov, L40S-class GPU, cached weights):
+  Kokoro ready **30 s**, Parakeet **52 s**, **E2B 129 s (~2:10)**, E4B 228 s (~3:50). Before: E2B ~5 min.
+  The two talkers still load one after another (two vLLM processes starting together on one GPU fight over
+  memory profiling).
 - Modal prices (Nov 2026): L40S $1.95/h, A100-80GB $2.50/h, L4 $0.80/h; region pinning ×1.15 (broad) or
   ×1.75 (narrow). Our setup ≈ $2.5–4/h while running; scale-to-zero when idle; Starter plan $30/month credit.
 
@@ -169,6 +189,13 @@ instead of a hard cut. Tone `cheerful` reached the TTS for every sentence.
 - Interruptions felt abrupt: "a better option would be to gradually lower the volume, like naturally
   someone…" → we built the 300 ms fade (SoftInterruptOutput) and raised VAD start to 0.3 s.
 - Wanted more **expressiveness** from TTS → Qwen3-TTS with talker-chosen tone.
+- Later session (18 Nov): "I see there is **no difference between the 4B and the 2B** model", "I think
+  **Kokoro is the only better option**. At the smaller level, it is fast", "the STT is also working great",
+  "the **turn detection** … is working completely **flawlessly**". Conclusion for the blog: for a talker
+  that only has to produce 2–4 short sentences + a route + a tone, **E2B is enough**; the 4B buys nothing
+  audible. Pick E2B (smaller GPU, faster boot).
+- On Qwen3-TTS (reference implementation): it was "too slow" and "not using the tags properly"
+  (`[laugh]` was read out / ignored). Loading time was the main complaint: "Loading takes so much long".
 
 ## 7. Things that broke and how we fixed them (good "war stories")
 1. **Couldn't deploy from the Claude cloud sandbox**: Modal's client speaks gRPC. First diagnosis was
@@ -189,7 +216,40 @@ instead of a hard cut. Tone `cheerful` reached the TTS for every sentence.
 6. **LiveKit Cloud**: worked first time. The Modal workspace already had a `livekit` secret from an older
    project (bankbot); verified it with a tiny Modal function (list rooms) instead of overwriting it.
 7. **Sandbox restarts** killed background watchers mid-deploy; Modal itself was unaffected.
-8. Cosmetic: Pipecat logs `STTSettings/TTSSettings NOT_GIVEN` as ERROR; harmless.
+8. **Qwen3-TTS reference implementation too slow**: first version ran `qwen-tts` (the HF reference package)
+   in-process in our GPU container. Warm, it took **6.89 s per sentence** (no streaming, full sentence then
+   play) → unusable for conversation. Also crashed once on start because our image sets
+   `HF_HUB_ENABLE_HF_TRANSFER=1` but that venv had no `hf_transfer` (fix: set it to 0 for that sidecar).
+9. **Tags**: Qwen3-TTS CustomVoice doesn't read inline `[laugh]` tags; it takes a natural-language
+   `instructions` field. Fix: `qwen_instructions(tone, text)` strips the tags from the text and folds them
+   into the instruction ("…with a light laugh at the start"). The prompt also had to say "You CAN laugh…
+   never say you can't laugh" because Gemma kept apologising that it is an AI and cannot laugh.
+10. **Moved Qwen3-TTS to vLLM-Omni** on its own Modal GPU function (`qwen_tts`, `@modal.web_server`,
+    `vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --omni --deploy-config …/qwen3_tts.yaml`, OpenAI-style
+    `/v1/audio/speech` with `stream: true, response_format: pcm`). Separate GPU so it can't starve the
+    talkers, and separate image because vLLM-Omni 0.32 pins vllm 0.32 while the talkers use vllm 0.34.
+11. **vLLM-Omni crash #1**: `RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda'`
+    (the sampler JIT-compiles a kernel). The image was `debian_slim` + pip CUDA wheels, which has no nvcc.
+    Fix: base the image on `nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04` and set `CUDA_HOME` (commit 226aaec).
+12. **vLLM-Omni crash #2 (unsolved, the last thing we saw)**: model weights load fine (9.3 GiB, KV 4.2 GiB),
+    then stage 0 captures CUDA graphs including the multi-token-prediction ("MRv2 mtp") graphs for sizes
+    64…1, and the whole stage exceeds vLLM-Omni's **built-in 300 s `stage_init_timeout`**:
+    `TimeoutError: LLM stage-0 replica-0 did not become ready within 300s (stage_init_timeout)`.
+    Likely fixes, not tried: raise the stage init timeout (deploy config / CLI flag), run with
+    `enforce_eager` (skip graph capture; slower decode), capture fewer graph sizes, or use a faster GPU
+    than L4/A10. The 0.6B model would also start faster.
+13. **Credit leak from health polling**: the main container polls the remote TTS `/health` for up to 25
+    minutes and pings it every 2 min to keep it warm. When Qwen kept crashing, every poll made Modal start
+    a **fresh GPU container**, which crashed again ~5 min later. Stopping containers by hand didn't help
+    (a new one appeared within seconds). What worked: cap the function at zero containers
+    (`modal.Function.from_name("talker-voice","qwen_tts").update_autoscaler(max_containers=0)`), then stop
+    the pending ones. Lesson: a keep-warm loop must give up after N failures, and an optional engine should
+    be opt-in. Afterwards the default TTS list was changed to Kokoro only (`TTS_ENGINES=kokoro`).
+14. **GPU capacity in India**: one deploy sat waiting because `ap-south`/`ap` had no free L40S/A100; we
+    waited rather than leave the region (latency to the user matters more than a few minutes).
+15. **Monitoring from the sandbox**: tailing `modal app logs` in a loop replayed old log lines and
+    confused progress; polling our own `/api/status` JSON was far more reliable.
+16. Cosmetic: Pipecat logs `STTSettings/TTSSettings NOT_GIVEN` as ERROR; harmless.
 
 ## 8. Things we deliberately did NOT do (and why)
 - **No thinker model yet**: user wanted to test the talkers alone first. `route` is diagnostic only.
@@ -234,12 +294,29 @@ Transports compared: Daily free 10,000 participant-min/month; LiveKit Build free
 1,000 agent-min, hard cap, no card; Cloudflare Realtime 1 TB free.
 
 ## 10. Current state and next steps (as of writing)
-- **Live-tested and working**: LiveKit + Parakeet + Gemma E2B/E4B + Kokoro, latency chips, barge-in.
-- **Built, locally tested, deploying now**: Qwen3-TTS option, `tone` field, soft 300 ms fade, VAD start 0.3 s,
-  longer/more natural replies, fixed-GiB vLLM budgets. Qwen3-TTS has **not yet run on a GPU** (latency
-  and quality unknown; per-sentence non-streaming generation of a 1.7B model, expect slower TTFA than Kokoro).
+**Final state (18 Nov 2026, end of the project's first phase: Modal credits used up)**
+- **Live-tested and working**: LiveKit + Parakeet + Gemma E2B/E4B + Kokoro, latency chips, `tone` field,
+  soft barge-in fade, VAD start 0.3 s, longer/more natural replies, fixed-GiB vLLM budgets, parallel boot.
+- **Recommended config**: Parakeet + Gemma 4 **E2B** + **Kokoro**, LiveKit transport, one GPU
+  (`TALKERS=gemma-4-e2b`, an L4/L40S is enough). ~0.4 s from end of turn to first audio.
+- **Fade fix with Kokoro**: built and passes the e2e test in Kokoro-like mode; not re-confirmed live.
+- **Qwen3-TTS**: reference implementation ran (6.9 s/sentence, too slow); vLLM-Omni version gets past
+  loading but dies on the 300 s stage-init timeout. **Off by default now** (opt in with
+  `TTS_ENGINES=kokoro,qwen3-tts`). Its real streaming TTFA on our setup was never measured.
+- Modal: app `talker-voice` is deployed but scaled to zero (0 containers); `qwen_tts` was capped at
+  max_containers=0 at runtime (a redeploy resets that).
+- Cost: the billing report showed **~$4.65 for talker-voice** this month (before the last day's runs were
+  fully counted); the workspace's $30 monthly credit was used up overall (other projects ~$25).
 - Next candidates: add the thinker (delegate on DELEGATE, filler, rephrase), routing eval at scale + LoRA
   for E2B, Parakeet-EOU A/B, duck-and-resume, Qwen3-TTS streaming (vLLM-Omni), GPU snapshots, password on URL.
+
+## 10b. Cost lessons (for the blog)
+- Scale-to-zero (`scaledown_window=300`, `max_containers=1`) kept a demo with 5 models on one GPU at a few
+  dollars total for days of on-and-off testing.
+- The expensive part was not talking to the bot, it was **cold starts and failed boots** (each failed
+  Qwen boot ≈ 5–6 GPU-minutes). Do CPU smoke tests and cheap-GPU checks (T4) before a full deploy.
+- Anything that auto-wakes a GPU service (health checks, keep-alive pings) needs a failure budget.
+- Region pinning to India costs ×1.15 on Modal; worth it for latency, but capacity can be thin.
 
 ## 11. Reproduce
 ```bash
