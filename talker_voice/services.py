@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import AsyncGenerator
 
@@ -173,6 +174,92 @@ class SayExtractor(FrameProcessor):
 
 KokoroTTS = SidecarTTS  # backwards-compatible name
 
+TONE_INSTRUCT = {
+    "neutral": "Speak naturally in a relaxed, conversational way.",
+    "warm": "Speak warmly and kindly, like a friendly person who cares.",
+    "cheerful": "Speak in a bright, cheerful and upbeat tone with a smile in your voice.",
+    "excited": "Speak with genuine excitement and energy.",
+    "calm": "Speak calmly and softly, slow and reassuring.",
+    "empathetic": "Speak gently and empathetically, with understanding and care.",
+    "serious": "Speak in a clear, serious and focused tone.",
+    "playful": "Speak in a playful, light-hearted and teasing tone.",
+}
+_TAG_RE = re.compile(r"\[(laugh|laughs|laughing|chuckle|chuckles|sigh|sighs)\]", re.I)
+_TAG_INSTRUCT = {
+    "laugh": "Laugh out loud naturally while saying this, a real amused laugh.",
+    "chuckle": "Chuckle softly while saying this, amused.",
+    "sigh": "Begin with a soft sigh.",
+}
+
+
+def qwen_instructions(tone: str, text: str) -> tuple[str, str]:
+    """Qwen3-TTS has no inline tags; fold [laugh]/[chuckle]/[sigh] into the style instruction."""
+    extra = []
+    for m in _TAG_RE.finditer(text):
+        key = m.group(1).lower().rstrip("s").replace("laughing", "laugh").replace("laugh", "laugh")
+        key = "laugh" if key.startswith("laugh") else ("chuckle" if key.startswith("chuckle") else "sigh")
+        if _TAG_INSTRUCT[key] not in extra:
+            extra.append(_TAG_INSTRUCT[key])
+    clean = re.sub(r"\s{2,}", " ", _TAG_RE.sub("", text)).strip()
+    return " ".join([TONE_INSTRUCT.get(tone, TONE_INSTRUCT["neutral"]), *extra]), clean
+
+
+class QwenOmniTTS(TTSService):
+    """Qwen3-TTS served by vLLM-Omni (OpenAI-style /v1/audio/speech), streamed as PCM16 24 kHz."""
+
+    def __init__(self, *, url: str, voice: str, speed: float = 1.0, **kwargs):
+        super().__init__(push_start_frame=True, push_stop_frames=True, sample_rate=24000, **kwargs)
+        self._url = url.rstrip("/") + "/v1/audio/speech"
+        self._voice = voice
+        self._speed = speed
+        self.tone = "neutral"
+        self._session: aiohttp.ClientSession | None = None
+
+    def can_generate_metrics(self) -> bool:
+        return True
+
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
+        instructions, clean = qwen_instructions(self.tone, text)
+        if not clean:
+            return
+        if self._session is None:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
+        payload = {
+            "input": clean,
+            "voice": self._voice,
+            "language": "English",
+            "instructions": instructions,
+            "stream": True,
+            "stream_format": "audio",
+            "response_format": "pcm",
+        }
+        try:
+            await self.start_tts_usage_metrics(clean)
+            async with self._session.post(self._url, json=payload) as resp:
+                if resp.status != 200:
+                    yield ErrorFrame(error=f"Qwen3-TTS HTTP {resp.status}: {(await resp.text())[:200]}")
+                    return
+                leftover = b""
+                async for chunk in resp.content.iter_any():
+                    await self.stop_ttfb_metrics()
+                    chunk = leftover + chunk
+                    cut = len(chunk) - (len(chunk) % 2)
+                    leftover = chunk[cut:]
+                    if cut:
+                        yield TTSAudioRawFrame(audio=chunk[:cut], sample_rate=24000, num_channels=1, context_id=context_id)
+            # same short pause between sentences as Kokoro, so pacing feels even
+            yield TTSAudioRawFrame(audio=b"\x00\x00" * int(24000 * 0.18), sample_rate=24000, num_channels=1,
+                                   context_id=context_id)
+        except Exception as e:  # noqa: BLE001
+            yield ErrorFrame(error=f"Qwen3-TTS failed: {e}")
+        finally:
+            await self.stop_ttfb_metrics()
+
+    async def cleanup(self):
+        await super().cleanup()
+        if self._session:
+            await self._session.close()
+
 
 class SoftInterruptOutput(FrameProcessor):
     """Fade the bot out instead of cutting it off when the user barges in.
@@ -249,4 +336,5 @@ class SoftInterruptOutput(FrameProcessor):
             self._task.cancel()
 
 
-__all__ = ["ParakeetSTT", "SidecarTTS", "KokoroTTS", "SayExtractor", "SoftInterruptOutput", "logger"]
+__all__ = ["ParakeetSTT", "SidecarTTS", "KokoroTTS", "QwenOmniTTS", "qwen_instructions", "SayExtractor",
+           "SoftInterruptOutput", "logger"]

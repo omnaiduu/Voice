@@ -43,10 +43,10 @@ TTS_ENGINES: dict[str, dict] = {
         "default_voice": DEFAULT_VOICE,
     },
     "qwen3-tts": {
-        "label": "Qwen3-TTS 1.7B (expressive)",
-        "port": QWEN_TTS_PORT,
-        "voices": {"Ryan": "Ryan (male)", "Aiden": "Aiden (male)", "Vivian": "Vivian (female)", "Serena": "Serena (female)"},
-        "default_voice": "Ryan",
+        "label": "Qwen3-TTS 1.7B via vLLM-Omni (expressive, streaming)",
+        "remote_function": "qwen_tts",  # separate Modal GPU service (see modal_app.qwen_tts)
+        "voices": {"ryan": "Ryan (male)", "aiden": "Aiden (male)", "vivian": "Vivian (female)", "serena": "Serena (female)"},
+        "default_voice": "ryan",
     },
 }
 ENABLED_TTS = [t.strip() for t in os.environ.get("TTS_ENGINES", "kokoro,qwen3-tts").split(",") if t.strip()]

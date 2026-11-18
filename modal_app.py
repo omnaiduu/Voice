@@ -59,13 +59,6 @@ image = (
         "aiohttp",
         "fastapi[standard]",
     )
-    # Qwen3-TTS (expressive voice) in its own venv: it pins its own transformers
-    .apt_install("sox", "libsox-fmt-all")
-    .run_commands(
-        f"uv venv /opt/qwentts --python {PY}",
-        "uv pip install --python /opt/qwentts/bin/python 'qwen-tts==0.1.1' "
-        "'fastapi==0.115.12' 'uvicorn[standard]' soundfile",
-    )
     .env(
         {
             "HF_HOME": "/cache/hf",
@@ -87,6 +80,45 @@ secrets.append(
 )
 
 
+QWEN_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+OMNI_PORT = 8091
+
+# Expressive TTS served the fast way: vLLM-Omni (talker -> code2wav, async chunk streaming),
+# on its own small GPU so it never competes with the Gemma talkers for memory.
+omni_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("ffmpeg", "sox", "libsox-fmt-all", "git")
+    .uv_pip_install("vllm==0.32.0", "vllm-omni==0.32.0", "hf_transfer")
+    .env({"HF_HOME": "/cache/hf", "HF_HUB_ENABLE_HF_TRANSFER": "1", "VLLM_CACHE_ROOT": "/cache/vllm"})
+)
+
+
+@app.function(
+    image=omni_image,
+    gpu=[g.strip() for g in os.environ.get("QWEN_TTS_GPU", "L4,A10,L40S").split(",")],
+    region=REGION,
+    routing_region=ROUTING_REGION,
+    volumes={"/cache": cache},
+    secrets=secrets,
+    max_containers=1,
+    scaledown_window=5 * 60,
+    timeout=60 * 60,
+)
+@modal.concurrent(max_inputs=16)
+@modal.web_server(port=OMNI_PORT, startup_timeout=20 * 60)
+def qwen_tts():
+    import os as _os
+    import subprocess
+
+    import vllm_omni
+
+    cfg = _os.path.join(_os.path.dirname(vllm_omni.__file__), "deploy", "qwen3_tts.yaml")
+    subprocess.Popen(
+        ["vllm", "serve", QWEN_TTS_MODEL, "--deploy-config", cfg, "--omni",
+         "--host", "0.0.0.0", "--port", str(OMNI_PORT), "--trust-remote-code"]
+    )
+
+
 @app.function(
     image=image,
     gpu=GPU,
@@ -96,7 +128,7 @@ secrets.append(
     memory=32 * 1024,
     volumes={"/cache": cache},
     secrets=secrets,
-    env={"TALKERS": TALKERS, "MODAL_REGION": ",".join(REGION)},
+    env={"TALKERS": TALKERS, "MODAL_REGION": ",".join(REGION), "APP_NAME": APP_NAME},
     max_containers=1,  # one user, one container: the WebRTC peer is always this container
     scaledown_window=5 * 60,  # GPU shuts down 5 min after the page stops pinging
     timeout=60 * 60,
@@ -121,7 +153,6 @@ def smoke():
         "asr (NeMo)": ["/opt/asr/bin/python", "-c", "import nemo.collections.asr, numpy; print('nemo ok, numpy', numpy.__version__)"],
         "tts (Kokoro)": ["/opt/tts/bin/python", "-c", "from kokoro import KModel, KPipeline; import spacy; spacy.load('en_core_web_sm'); print('kokoro ok')"],
         "vllm": ["/opt/vllm/bin/python", "-c", "import vllm; print('vllm', vllm.__version__)"],
-        "qwen-tts": ["/opt/qwentts/bin/python", "-c", "from qwen_tts import Qwen3TTSModel; print('qwen-tts ok')"],
         "bot (Pipecat)": ["python", "-c", "import talker_voice.bot, talker_voice.server; print('bot ok')"],
     }
     failed = []

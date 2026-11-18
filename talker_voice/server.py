@@ -39,7 +39,6 @@ from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
 STATIC = Path(__file__).parent / "static"
 VENV_ASR = os.environ.get("VENV_ASR", "/opt/asr/bin/python")
 VENV_TTS = os.environ.get("VENV_TTS", "/opt/tts/bin/python")
-VENV_QWEN_TTS = os.environ.get("VENV_QWEN_TTS", "/opt/qwentts/bin/python")
 VLLM_BIN = os.environ.get("VLLM_BIN", "/opt/vllm/bin/vllm")
 SIDECARS = Path(__file__).parent / "sidecars"
 ICE_SERVERS = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
@@ -49,7 +48,6 @@ STATUS: dict[str, str] = (
 )
 TTS_SIDECARS = {
     "kokoro": (VENV_TTS, "tts_server.py", "TTS_PORT"),
-    "qwen3-tts": (VENV_QWEN_TTS, "qwen_tts_server.py", "QWEN_TTS_PORT"),
 }
 _procs: list[subprocess.Popen] = []
 _started = False
@@ -82,6 +80,45 @@ def _spawn(cmd: list[str], env_extra: dict | None = None) -> subprocess.Popen:
     return p
 
 
+def _boot_remote_tts(eng: str):
+    """A TTS engine running as its own Modal GPU service: find its URL, wake it, keep it warm."""
+    try:
+        import modal
+
+        fn = modal.Function.from_name(os.environ.get("APP_NAME", "talker-voice"), TTS_ENGINES[eng]["remote_function"])
+        url = fn.get_web_url().rstrip("/")
+        TTS_ENGINES[eng]["url"] = url
+        logger.info(f"{eng} remote url: {url}")
+    except Exception as e:  # noqa: BLE001
+        STATUS[eng] = f"crashed (lookup failed: {e})"
+        return
+    STATUS[eng] = "loading"
+    t0 = time.time()
+    while time.time() - t0 < 1500:
+        try:
+            with urllib.request.urlopen(f"{url}/health", timeout=60) as r:
+                if r.status == 200:
+                    STATUS[eng] = "ready"
+                    logger.info(f"{eng} ready in {time.time() - t0:.0f}s")
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(5)
+    else:
+        STATUS[eng] = "timeout"
+        return
+
+    def keepalive():  # keep the remote GPU warm while this (main) container is alive
+        while True:
+            time.sleep(120)
+            try:
+                urllib.request.urlopen(f"{url}/health", timeout=30).close()
+            except Exception:  # noqa: BLE001
+                STATUS[eng] = "loading"
+
+    threading.Thread(target=keepalive, daemon=True).start()
+
+
 def _gpu_total_gib() -> float:
     try:
         out = subprocess.run(
@@ -99,6 +136,9 @@ def _boot():
     asr = _spawn([VENV_ASR, str(SIDECARS / "asr_server.py")], {"ASR_PORT": str(ASR_PORT)})
     waits.append(threading.Thread(target=_wait_http, args=(f"http://127.0.0.1:{ASR_PORT}/health", "asr", asr)))
     for eng in ENABLED_TTS:
+        if TTS_ENGINES[eng].get("remote_function"):
+            waits.append(threading.Thread(target=_boot_remote_tts, args=(eng,)))
+            continue
         venv, script, port_env = TTS_SIDECARS[eng]
         port = TTS_ENGINES[eng]["port"]
         # qwen-tts venv has no hf_transfer; the global HF_HUB_ENABLE_HF_TRANSFER=1 would make it crash

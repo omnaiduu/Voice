@@ -46,7 +46,7 @@ except Exception:  # noqa: BLE001
     LiveKitParams = LiveKitTransport = None
 
 from .config import ASR_PORT, DEFAULT_VOICE, TALKERS, TTS_ENGINES
-from .services import ParakeetSTT, SayExtractor, SidecarTTS, SoftInterruptOutput
+from .services import ParakeetSTT, QwenOmniTTS, SayExtractor, SidecarTTS, SoftInterruptOutput
 from .structured import RESPONSE_FORMAT, SYSTEM_PROMPT
 from .ws_serializer import RawPCMSerializer
 
@@ -222,7 +222,11 @@ async def run_bot(
         send({"type": "bot", "route": route, "tone": tts.tone, "text": say, "raw": raw})
 
     say = SayExtractor(on_route=on_route, on_tone=on_tone, on_first_say=on_first_say, on_done=on_done)
-    tts = SidecarTTS(url=f"http://127.0.0.1:{TTS_ENGINES[tts_engine]['port']}/tts", voice=voice, speed=speed)
+    eng = TTS_ENGINES[tts_engine]
+    if eng.get("remote_function"):
+        tts = QwenOmniTTS(url=eng["url"], voice=voice, speed=speed)
+    else:
+        tts = SidecarTTS(url=f"http://127.0.0.1:{eng['port']}/tts", voice=voice, speed=speed)
     soft = SoftInterruptOutput(fade_ms=300)
 
     context = LLMContext([{"role": "system", "content": SYSTEM_PROMPT}])
