@@ -7,19 +7,21 @@ TTS_PORT = 8102  # Kokoro
 QWEN_TTS_PORT = 8103
 
 # Talker models served by vLLM (each in its own process/port on the same GPU).
-# gpu_mem = vLLM --gpu-memory-utilization (fraction of the WHOLE GPU) for that model.
+# gpu_gib = GPU memory budget for that vLLM server (weights + KV cache + overhead).
+# Measured: E2B weights 9.2 GiB, E4B 14.5 GiB; ~2 GiB KV is plenty for short voice turns.
+# The server converts it into --gpu-memory-utilization for whatever GPU we got.
 TALKERS: dict[str, dict] = {
     "gemma-4-e2b": {
         "hf_id": "google/gemma-4-E2B-it",
         "label": "Gemma 4 E2B (2B effective)",
         "port": 8201,
-        "gpu_mem": float(os.environ.get("E2B_GPU_MEM", "0.32")),
+        "gpu_gib": float(os.environ.get("E2B_GPU_GIB", "12")),
     },
     "gemma-4-e4b": {
         "hf_id": "google/gemma-4-E4B-it",
         "label": "Gemma 4 E4B (4B effective)",
         "port": 8202,
-        "gpu_mem": float(os.environ.get("E4B_GPU_MEM", "0.42")),
+        "gpu_gib": float(os.environ.get("E4B_GPU_GIB", "17.5")),
     },
 }
 

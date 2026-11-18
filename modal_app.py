@@ -59,6 +59,13 @@ image = (
         "aiohttp",
         "fastapi[standard]",
     )
+    # Qwen3-TTS (expressive voice) in its own venv: it pins its own transformers
+    .apt_install("sox", "libsox-fmt-all")
+    .run_commands(
+        f"uv venv /opt/qwentts --python {PY}",
+        "uv pip install --python /opt/qwentts/bin/python 'qwen-tts==0.1.1' "
+        "'fastapi==0.115.12' 'uvicorn[standard]' soundfile",
+    )
     .env(
         {
             "HF_HOME": "/cache/hf",
@@ -114,6 +121,7 @@ def smoke():
         "asr (NeMo)": ["/opt/asr/bin/python", "-c", "import nemo.collections.asr, numpy; print('nemo ok, numpy', numpy.__version__)"],
         "tts (Kokoro)": ["/opt/tts/bin/python", "-c", "from kokoro import KModel, KPipeline; import spacy; spacy.load('en_core_web_sm'); print('kokoro ok')"],
         "vllm": ["/opt/vllm/bin/python", "-c", "import vllm; print('vllm', vllm.__version__)"],
+        "qwen-tts": ["/opt/qwentts/bin/python", "-c", "from qwen_tts import Qwen3TTSModel; print('qwen-tts ok')"],
         "bot (Pipecat)": ["python", "-c", "import talker_voice.bot, talker_voice.server; print('bot ok')"],
     }
     failed = []

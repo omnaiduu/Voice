@@ -82,6 +82,17 @@ def _spawn(cmd: list[str], env_extra: dict | None = None) -> subprocess.Popen:
     return p
 
 
+def _gpu_total_gib() -> float:
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=20,
+        ).stdout.strip().splitlines()[0]
+        return float(out) / 1024
+    except Exception:  # noqa: BLE001
+        return 44.0  # L40S-ish fallback
+
+
 def _boot():
     # 1) speech models (small) first, in parallel
     waits = []
@@ -98,14 +109,17 @@ def _boot():
         t.join()
 
     # 2) talkers one at a time (vLLM sizes its memory from what is free at start)
+    total = _gpu_total_gib()
+    logger.info(f"GPU total memory: {total:.1f} GiB")
     for key in ENABLED_TALKERS:
         cfg = TALKERS[key]
+        util = round(min(0.6, cfg["gpu_gib"] / total), 3)
         STATUS[key] = "loading"
         cmd = [
             VLLM_BIN, "serve", cfg["hf_id"],
             "--host", "127.0.0.1",
             "--port", str(cfg["port"]),
-            "--gpu-memory-utilization", str(cfg["gpu_mem"]),
+            "--gpu-memory-utilization", str(util),
             "--max-model-len", str(MAX_MODEL_LEN),
             "--max-num-seqs", "4",
             "--limit-mm-per-prompt", json.dumps({"image": 0, "audio": 0}),

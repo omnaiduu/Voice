@@ -62,7 +62,7 @@
 <body>
 <main>
   <h1>Talker Voice Lab</h1>
-  <p class="sub">Parakeet STT → Gemma 4 talker (JSON: route + say) → sentence chunking → Kokoro TTS. WebRTC via LiveKit Cloud (or direct P2P), one GPU.</p>
+  <p class="sub">Parakeet STT → Gemma 4 talker (JSON: route + tone + say) → sentence chunking → Kokoro or Qwen3-TTS. WebRTC via LiveKit Cloud (or direct P2P), one GPU.</p>
 
   <div class="grid">
     <div>
@@ -75,6 +75,8 @@
           <option value="livekit" selected>LiveKit Cloud (works on any network)</option>
           <option value="p2p">Direct peer-to-peer WebRTC</option>
         </select>
+        <label for="tts">Voice model (TTS)</label>
+        <select id="tts"></select>
         <label for="voice">Voice</label>
         <select id="voice"></select>
         <label for="speed">Speed <span id="speedv">1.00×</span></label>
@@ -126,11 +128,15 @@ async function pollStatus() {
     clearInterval(statusTimer); return;
   }
 }
-let populated = false;
+let populated = false, ttsEngines = {};
+function fillVoices() {
+  const e = ttsEngines[$("tts").value]; if (!e) return;
+  $("voice").innerHTML = Object.entries(e.voices).map(([k, l]) => `<option value="${k}" ${k===e.default_voice?"selected":""}>${l}</option>`).join("");
+}
 function renderStatus(s) {
   const rows = Object.entries(s.status).map(([k, v]) => {
     const cls = v === "ready" ? "ready" : (v.startsWith("crash") || v === "timeout") ? "bad" : v;
-    const name = s.talkers[k] || k.toUpperCase();
+    const name = s.talkers[k] || (s.tts_engines && s.tts_engines[k] && s.tts_engines[k].label) || k.toUpperCase();
     return `<div class="status-row"><span><span class="dot ${cls}"></span>${name}</span><span>${v}</span></div>`;
   });
   $("status").innerHTML = rows.join("");
@@ -138,10 +144,12 @@ function renderStatus(s) {
   if (!populated) {
     populated = true;
     $("talker").innerHTML = Object.entries(s.talkers).map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
-    $("voice").innerHTML = Object.entries(s.voices).map(([k, l]) => `<option value="${k}" ${k===s.default_voice?"selected":""}>${l}</option>`).join("");
+    ttsEngines = s.tts_engines || {};
+    $("tts").innerHTML = Object.entries(ttsEngines).map(([k, e]) => `<option value="${k}">${e.label}</option>`).join("");
+    fillVoices();
   }
   const t = $("talker").value;
-  const ready = s.status.asr === "ready" && s.status.tts === "ready" && s.status[t] === "ready";
+  const ready = s.status.asr === "ready" && s.status[$("tts").value] === "ready" && s.status[t] === "ready";
   if (!connected) {
     $("call").disabled = !ready;
     $("call").textContent = ready ? "Start talking" : "Waiting for models… (cold start takes a few minutes)";
@@ -178,6 +186,7 @@ function onBotMessage(m) {
   else if (m.type === "bot") {
     pendingBot = addMsg("bot", m.text || "");
     if (m.route) chip(pendingBot, m.route, "route");
+    if (m.tone) chip(pendingBot, "tone: " + m.tone);
     const det = document.createElement("details"); det.innerHTML = "<summary>raw JSON</summary><pre></pre>";
     det.querySelector("pre").textContent = m.raw; pendingBot.appendChild(det);
   }
@@ -209,7 +218,7 @@ async function connectLiveKit() {
   $("call").disabled = true; setState("connecting");
   const r = await fetch("/api/livekit/start", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ talker: $("talker").value, voice: $("voice").value, speed: parseFloat($("speed").value) }),
+    body: JSON.stringify({ talker: $("talker").value, tts: $("tts").value, voice: $("voice").value, speed: parseFloat($("speed").value) }),
   });
   if (!r.ok) { addMsg("bot", "Could not start: " + (await r.text())); disconnect(); return; }
   const { url, token } = await r.json();
@@ -258,7 +267,7 @@ async function connectP2P() {
   const r = await fetch("/api/offer", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type,
-      talker: $("talker").value, voice: $("voice").value, speed: parseFloat($("speed").value) }),
+      talker: $("talker").value, tts: $("tts").value, voice: $("voice").value, speed: parseFloat($("speed").value) }),
   });
   if (!r.ok) { addMsg("bot", "Could not start: " + (await r.text())); disconnect(); return; }
   const ans = await r.json();
@@ -282,6 +291,7 @@ $("call").onclick = () => connected ? disconnect() : connect().catch((e) => { ad
 $("talker").onchange = async () => { if (connected) { disconnect(); await connect(); } };
 $("voice").onchange = async () => { if (connected) { disconnect(); await connect(); } };
 $("mode").onchange = async () => { if (connected) { disconnect(); await connect(); } };
+$("tts").onchange = async () => { fillVoices(); if (connected) { disconnect(); await connect(); } };
 $("speed").oninput = () => { $("speedv").textContent = parseFloat($("speed").value).toFixed(2) + "×"; };
 </script>
 </body>
